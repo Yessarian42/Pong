@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Pong</title>
+  <meta name="theme-color" content="#111111" />
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    html, body { margin: 0; height: 100%; background:#0f0f0f; color:#fff; font-family: system-ui, sans-serif; }
+    .wrap { display:flex; flex-direction:column; height:100%; }
+    header { padding: 10px 12px; display:flex; gap:12px; align-items:center; justify-content:space-between; }
+    header .left { display:flex; gap:12px; align-items:center; }
+    button { background:#222; color:#fff; border:1px solid #333; border-radius:10px; padding:10px 12px; font-size:14px; }
+    button:active { transform: scale(0.98); }
+    .hint { opacity:0.8; font-size:13px; }
+    canvas { flex: 1; width: 100%; height: 100%; touch-action: none; display:block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="left">
+        <button id="btnPause">Pause</button>
+        <button id="btnReset">Reset</button>
+      </div>
+      <div class="hint">Drag to move paddle • First to 11</div>
+      <div id="score" aria-label="Score">0 : 0</div>
+    </header>
+    <canvas id="game" aria-label="Pong game area"></canvas>
+  </div>
+
+  <script>
+    // Basic Pong tuned for phones (responsive canvas + touch drag)
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.getElementById("score");
+
+    const state = {
+      paused: false,
+      w: 0, h: 0,
+      // gameplay scale (set on resize)
+      paddleW: 14,
+      paddleH: 90,
+      ballR: 8,
+      // entities
+      player: { x: 0, y: 0, vy: 0 },
+      cpu:    { x: 0, y: 0, vy: 0 },
+      ball:   { x: 0, y: 0, vx: 0, vy: 0 },
+      // scores
+      pScore: 0,
+      cScore: 0,
+      winScore: 11,
+      // touch
+      dragging: false,
+      lastTouchY: null,
+      lastT: performance.now()
+    };
+
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+    function resize() {
+      // Fit to CSS size; handle devicePixelRatio for crispness
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+
+      state.w = rect.width;
+      state.h = rect.height;
+
+      const minSide = Math.min(state.w, state.h);
+      state.paddleW = clamp(Math.round(minSide * 0.02), 10, 18);
+      state.paddleH = clamp(Math.round(minSide * 0.18), 70, 130);
+      state.ballR   = clamp(Math.round(minSide * 0.018), 6, 10);
+
+      state.player.x = 18;
+      state.cpu.x = state.w - 18 - state.paddleW;
+
+      if (!Number.isFinite(state.player.y)) state.player.y = (state.h - state.paddleH) / 2;
+      if (!Number.isFinite(state.cpu.y)) state.cpu.y = (state.h - state.paddleH) / 2;
+
+      state.player.y = clamp(state.player.y, 0, state.h - state.paddleH);
+      state.cpu.y = clamp(state.cpu.y, 0, state.h - state.paddleH);
+
+      // keep ball in bounds after resize
+      state.ball.x = clamp(state.ball.x, state.ballR, state.w - state.ballR);
+      state.ball.y = clamp(state.ball.y, state.ballR, state.h - state.ballR);
+    }
+
+    window.addEventListener("resize", resize);
+
+    function resetBall(servingToCpu = false) {
+      state.ball.x = state.w / 2;
+      state.ball.y = state.h / 2;
+
+      const speed = clamp(Math.min(state.w, state.h) * 0.55, 260, 520); // px/s
+      const angle = (Math.random() * 0.8 - 0.4); // -0.4..0.4 rad-ish factor
+      const dir = servingToCpu ? 1 : -1;
+
+      state.ball.vx = dir * speed;
+      state.ball.vy = speed * angle;
+    }
+
+    function resetGame() {
+      state.pScore = 0;
+      state.cScore = 0;
+      scoreEl.textContent = `${state.pScore} : ${state.cScore}`;
+      state.player.y = (state.h - state.paddleH) / 2;
+      state.cpu.y = (state.h - state.paddleH) / 2;
+      resetBall(true);
+      state.paused = false;
+      document.getElementById("btnPause").textContent = "Pause";
+    }
+
+    function drawNet() {
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      const dashH = 14, gap = 14;
+      for (let y = 0; y < state.h; y += dashH + gap) {
+        ctx.fillRect(state.w / 2 - 2, y, 4, dashH);
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, state.w, state.h);
+
+      // background
+      ctx.fillStyle = "#0f0f0f";
+      ctx.fillRect(0, 0, state.w, state.h);
+
+      drawNet();
+
+      // paddles
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(state.player.x, state.player.y, state.paddleW, state.paddleH);
+      ctx.fillRect(state.cpu.x, state.cpu.y, state.paddleW, state.paddleH);
+
+      // ball
+      ctx.beginPath();
+      ctx.arc(state.ball.x, state.ball.y, state.ballR, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (state.paused) {
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(0, 0, state.w, state.h);
+        ctx.fillStyle = "#fff";
+        ctx.font = "600 20px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Paused", state.w / 2, state.h / 2);
+      }
+    }
+
+    function rectHit(ballX, ballY, r, rx, ry, rw, rh) {
+      // circle-rect collision (AABB)
+      const closestX = clamp(ballX, rx, rx + rw);
+      const closestY = clamp(ballY, ry, ry + rh);
+      const dx = ballX - closestX;
+      const dy = ballY - closestY;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    function update(dt) {
+      if (state.paused) return;
+
+      // CPU simple AI
+      const cpuCenter = state.cpu.y + state.paddleH / 2;
+      const target = state.ball.y;
+      const maxCpuSpeed = clamp(Math.min(state.w, state.h) * 0.55, 260, 520); // px/s
+      const error = target - cpuCenter;
+      state.cpu.vy = clamp(error * 6, -maxCpuSpeed, maxCpuSpeed);
+      state.cpu.y += state.cpu.vy * dt;
+      state.cpu.y = clamp(state.cpu.y, 0, state.h - state.paddleH);
+
+      // Ball movement
+      state.ball.x += state.ball.vx * dt;
+      state.ball.y += state.ball.vy * dt;
+
+      // Wall bounce (top/bottom)
+      if (state.ball.y - state.ballR <= 0) {
+        state.ball.y = state.ballR;
+        state.ball.vy *= -1;
+      } else if (state.ball.y + state.ballR >= state.h) {
+        state.ball.y = state.h - state.ballR;
+        state.ball.vy *= -1;
+      }
+
+      // Paddle collisions
+      const p = state.player;
+      const c = state.cpu;
+      const b = state.ball;
+
+      // Player paddle
+      if (b.vx < 0 && rectHit(b.x, b.y, state.ballR, p.x, p.y, state.paddleW, state.paddleH)) {
+        b.x = p.x + state.paddleW + state.ballR; // push out
+        b.vx *= -1;
+
+        // add spin depending on hit position
+        const rel = ((b.y - (p.y + state.paddleH/2)) / (state.paddleH/2)); // -1..1
+        b.vy += rel * clamp(Math.min(state.w, state.h) * 0.22, 80, 160);
+      }
+
+      // CPU paddle
+      if (b.vx > 0 && rectHit(b.x, b.y, state.ballR, c.x, c.y, state.paddleW, state.paddleH)) {
+        b.x = c.x - state.ballR; // push out
+        b.vx *= -1;
+
+        const rel = ((b.y - (c.y + state.paddleH/2)) / (state.paddleH/2));
+        b.vy += rel * clamp(Math.min(state.w, state.h) * 0.18, 60, 140);
+      }
+
+      // Score
+      if (b.x + state.ballR < 0) {
+        state.cScore += 1;
+        scoreEl.textContent = `${state.pScore} : ${state.cScore}`;
+        resetBall(false); // serve toward player
+      } else if (b.x - state.ballR > state.w) {
+        state.pScore += 1;
+        scoreEl.textContent = `${state.pScore} : ${state.cScore}`;
+        resetBall(true); // serve toward cpu
+      }
+
+      // Win condition
+      if (state.pScore >= state.winScore || state.cScore >= state.winScore) {
+        state.paused = true;
+        document.getElementById("btnPause").textContent = "Resume";
+      }
+    }
+
+    function loop(t) {
+      const dt = Math.min(0.033, (t - state.lastT) / 1000); // cap dt
+      state.lastT = t;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // Touch controls: drag anywhere on canvas to move paddle
+    function getTouchY(e) {
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches ? e.touches[0] : e;
+      return touch.clientY - rect.top;
+    }
+
+    function setPlayerByY(y) {
+      state.player.y = clamp(y - state.paddleH / 2, 0, state.h - state.paddleH);
+    }
+
+    canvas.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      state.dragging = true;
+      setPlayerByY(getTouchY(e));
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      if (!state.dragging) return;
+      setPlayerByY(getTouchY(e));
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", () => {
+      state.dragging = false;
+    });
+
+    // Mouse support (desktop testing)
+    canvas.addEventListener("mousedown", (e) => { state.dragging = true; setPlayerByY(getTouchY(e)); });
+    window.addEventListener("mousemove", (e) => { if (state.dragging) setPlayerByY(getTouchY(e)); });
+    window.addEventListener("mouseup", () => { state.dragging = false; });
+
+    // Buttons
+    document.getElementById("btnPause").addEventListener("click", () => {
+      state.paused = !state.paused;
+      document.getElementById("btnPause").textContent = state.paused ? "Resume" : "Pause";
+    });
+
+    document.getElementById("btnReset").addEventListener("click", resetGame);
+
+    // PWA service worker
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
+
+    // Init
+    resize();
+    resetBall(true);
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
